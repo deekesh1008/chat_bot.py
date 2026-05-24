@@ -1,9 +1,9 @@
 streamlit
 langchain
 langchain-community
-langchain-groq
 langchain-text-splitters
+langchain-groq
+sentence-transformers
 faiss-cpu
 pypdf
-sentence-transformers
-huggingface-hub
+youtube-transcript-api
