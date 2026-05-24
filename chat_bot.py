@@ -17,29 +17,36 @@ groq_api_key = st.secrets["GROQ_API_KEY"]
 
 st.markdown("""
 <style>
+
 html, body, [class*="css"] {
     font-family: Arial, sans-serif;
 }
+
 .stApp {
     background-color: #0b1120;
 }
+
 .block-container {
     max-width: 1100px;
     padding-top: 20px;
     padding-bottom: 120px;
 }
+
 .main-title {
     text-align: center;
     color: white;
     font-size: 50px;
     font-weight: bold;
+    margin-bottom: 8px;
 }
+
 .sub-title {
     text-align: center;
     color: #cbd5e1;
     font-size: 18px;
     margin-bottom: 25px;
 }
+
 .user-msg {
     background: #22c55e;
     color: white;
@@ -50,6 +57,7 @@ html, body, [class*="css"] {
     width: fit-content;
     max-width: 75%;
 }
+
 .bot-msg {
     background: #111827;
     color: white;
@@ -60,12 +68,25 @@ html, body, [class*="css"] {
     width: fit-content;
     max-width: 75%;
 }
+
+footer {
+    visibility: hidden;
+}
+
+header {
+    visibility: hidden;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">AI Assistant</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">Chat, Upload PDF, or Ask from YouTube Video</div>',
+    '<div class="main-title">AI Assistant</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="sub-title">Chat normally or upload PDF / paste YouTube link in chat</div>',
     unsafe_allow_html=True
 )
 
@@ -75,71 +96,113 @@ if "messages" not in st.session_state:
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
 
+if "pdf_name" not in st.session_state:
+    st.session_state.pdf_name = ""
+
 model = ChatGroq(
     groq_api_key=groq_api_key,
     model_name="llama-3.3-70b-versatile",
     temperature=0.3
 )
 
-for msg in st.session_state.messages:
-    st.markdown(f'<div class="user-msg">{msg["user"]}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="bot-msg">{msg["bot"]}</div>', unsafe_allow_html=True)
-
-col1, col2, col3 = st.columns([1, 4, 8])
-
-with col1:
-    uploaded_file = st.file_uploader("", type=["pdf"], label_visibility="collapsed")
-
-with col2:
-    youtube_url = st.text_input("YouTube")
-
-with col3:
-    user_input = st.chat_input("Type your message...")
-
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
+for msg in st.session_state.messages:
+
+    st.markdown(
+        f'<div class="user-msg">{msg["user"]}</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f'<div class="bot-msg">{msg["bot"]}</div>',
+        unsafe_allow_html=True
+    )
+
+col1, col2 = st.columns([1, 8])
+
+with col1:
+    uploaded_file = st.file_uploader(
+        "",
+        type=["pdf"],
+        label_visibility="collapsed"
+    )
+
+with col2:
+    user_input = st.chat_input("Type your message...")
+
 if uploaded_file:
-    with st.spinner("Reading PDF..."):
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        temp_file.write(uploaded_file.read())
-        temp_file.close()
 
-        loader = PyPDFLoader(temp_file.name)
-        docs = loader.load()
+    if uploaded_file.name != st.session_state.pdf_name:
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
-        )
+        with st.spinner("Reading PDF..."):
 
-        chunks = splitter.split_documents(docs)
+            temp_file = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".pdf"
+            )
 
-        st.session_state.vectorstore = FAISS.from_documents(chunks, embeddings)
+            temp_file.write(uploaded_file.read())
+            temp_file.close()
 
-        st.success("PDF Loaded")
+            loader = PyPDFLoader(temp_file.name)
+            docs = loader.load()
 
-if youtube_url:
-    with st.spinner("Processing YouTube Video..."):
-        loader = YoutubeLoader.from_youtube_url(youtube_url)
-        docs = loader.load()
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200
+            )
 
-        raw_text = docs[0].page_content
-        clean_text = re.sub(r'\s+', ' ', raw_text).strip()
+            chunks = splitter.split_documents(docs)
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
-        )
+            st.session_state.vectorstore = FAISS.from_documents(
+                chunks,
+                embeddings
+            )
 
-        chunks = splitter.create_documents([clean_text])
+            st.session_state.pdf_name = uploaded_file.name
 
-        st.session_state.vectorstore = FAISS.from_documents(chunks, embeddings)
-
-        st.success("YouTube Video Loaded")
+        st.success(f"PDF Loaded: {uploaded_file.name}")
 
 if user_input:
+
+    youtube_pattern = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/\S+"
+
+    if re.search(youtube_pattern, user_input):
+
+        with st.spinner("Processing YouTube Video..."):
+
+            url_match = re.search(youtube_pattern, user_input)
+            youtube_url = url_match.group()
+
+            loader = YoutubeLoader.from_youtube_url(youtube_url)
+            docs = loader.load()
+
+            raw_text = docs[0].page_content
+            clean_text = re.sub(r'\s+', ' ', raw_text).strip()
+
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200
+            )
+
+            chunks = splitter.create_documents([clean_text])
+
+            st.session_state.vectorstore = FAISS.from_documents(
+                chunks,
+                embeddings
+            )
+
+        response_text = "YouTube video loaded successfully. Now ask your questions."
+
+        st.session_state.messages.append({
+            "user": user_input,
+            "bot": response_text
+        })
+
+        st.rerun()
 
     st.session_state.messages.append({
         "user": user_input,
@@ -157,7 +220,9 @@ if user_input:
         context = "\n".join([doc.page_content for doc in docs])
 
         prompt = f"""
-Answer using context when relevant.
+You are a helpful AI assistant.
+
+Answer using provided context when relevant.
 
 Context:
 {context}
