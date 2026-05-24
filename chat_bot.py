@@ -1,9 +1,9 @@
 import streamlit as st
 import tempfile
-import os
+import re
 
 from langchain_groq import ChatGroq
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, YoutubeLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -17,36 +17,29 @@ groq_api_key = st.secrets["GROQ_API_KEY"]
 
 st.markdown("""
 <style>
-
 html, body, [class*="css"] {
     font-family: Arial, sans-serif;
 }
-
 .stApp {
     background-color: #0b1120;
 }
-
 .block-container {
     max-width: 1100px;
     padding-top: 20px;
     padding-bottom: 120px;
 }
-
 .main-title {
     text-align: center;
     color: white;
     font-size: 50px;
     font-weight: bold;
-    margin-bottom: 8px;
 }
-
 .sub-title {
     text-align: center;
     color: #cbd5e1;
     font-size: 18px;
     margin-bottom: 25px;
 }
-
 .user-msg {
     background: #22c55e;
     color: white;
@@ -56,10 +49,7 @@ html, body, [class*="css"] {
     margin-bottom: 14px;
     width: fit-content;
     max-width: 75%;
-    font-size: 16px;
-    line-height: 1.7;
 }
-
 .bot-msg {
     background: #111827;
     color: white;
@@ -69,47 +59,13 @@ html, body, [class*="css"] {
     margin-bottom: 18px;
     width: fit-content;
     max-width: 75%;
-    border: 1px solid #1f2937;
-    font-size: 16px;
-    line-height: 1.7;
 }
-
-section[data-testid="stFileUploaderDropzone"] {
-    background: #111827;
-    border: 1px solid #374151;
-    border-radius: 14px;
-    min-height: 52px;
-    max-height: 52px;
-    padding: 0px 10px;
-}
-
-section[data-testid="stFileUploaderDropzone"]:hover {
-    border: 1px solid #22c55e;
-}
-
-section[data-testid="stFileUploaderDropzone"] div {
-    color: white;
-    font-size: 13px;
-}
-
-footer {
-    visibility: hidden;
-}
-
-header {
-    visibility: hidden;
-}
-
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown('<div class="main-title">AI Assistant</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="main-title">AI Assistant</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="sub-title">Chat normally or upload a PDF and ask questions</div>',
+    '<div class="sub-title">Chat, Upload PDF, or Ask from YouTube Video</div>',
     unsafe_allow_html=True
 )
 
@@ -119,9 +75,6 @@ if "messages" not in st.session_state:
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
 
-if "pdf_name" not in st.session_state:
-    st.session_state.pdf_name = ""
-
 model = ChatGroq(
     groq_api_key=groq_api_key,
     model_name="llama-3.3-70b-versatile",
@@ -129,74 +82,62 @@ model = ChatGroq(
 )
 
 for msg in st.session_state.messages:
+    st.markdown(f'<div class="user-msg">{msg["user"]}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="bot-msg">{msg["bot"]}</div>', unsafe_allow_html=True)
 
-    st.markdown(
-        f"""
-        <div class="user-msg">
-        {msg['user']}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        f"""
-        <div class="bot-msg">
-        {msg['bot']}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-col1, col2 = st.columns([1, 8])
+col1, col2, col3 = st.columns([1, 4, 8])
 
 with col1:
-    uploaded_file = st.file_uploader(
-        "",
-        type=["pdf"],
-        label_visibility="collapsed"
-    )
+    uploaded_file = st.file_uploader("", type=["pdf"], label_visibility="collapsed")
 
 with col2:
+    youtube_url = st.text_input("YouTube")
+
+with col3:
     user_input = st.chat_input("Type your message...")
 
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
 if uploaded_file:
+    with st.spinner("Reading PDF..."):
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        temp_file.write(uploaded_file.read())
+        temp_file.close()
 
-    if uploaded_file.name != st.session_state.pdf_name:
+        loader = PyPDFLoader(temp_file.name)
+        docs = loader.load()
 
-        with st.spinner("Reading PDF..."):
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200
+        )
 
-            temp_file = tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=".pdf"
-            )
+        chunks = splitter.split_documents(docs)
 
-            temp_file.write(uploaded_file.read())
-            temp_file.close()
+        st.session_state.vectorstore = FAISS.from_documents(chunks, embeddings)
 
-            loader = PyPDFLoader(temp_file.name)
-            docs = loader.load()
+        st.success("PDF Loaded")
 
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200
-            )
+if youtube_url:
+    with st.spinner("Processing YouTube Video..."):
+        loader = YoutubeLoader.from_youtube_url(youtube_url)
+        docs = loader.load()
 
-            chunks = splitter.split_documents(docs)
+        raw_text = docs[0].page_content
+        clean_text = re.sub(r'\s+', ' ', raw_text).strip()
 
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200
+        )
 
-            vectorstore = FAISS.from_documents(
-                chunks,
-                embeddings
-            )
+        chunks = splitter.create_documents([clean_text])
 
-            st.session_state.vectorstore = vectorstore
-            st.session_state.pdf_name = uploaded_file.name
+        st.session_state.vectorstore = FAISS.from_documents(chunks, embeddings)
 
-        st.success(f"PDF Loaded: {uploaded_file.name}")
+        st.success("YouTube Video Loaded")
 
 if user_input:
 
@@ -216,13 +157,9 @@ if user_input:
         context = "\n".join([doc.page_content for doc in docs])
 
         prompt = f"""
-You are a helpful AI assistant.
+Answer using context when relevant.
 
-Answer based on the PDF context when relevant.
-
-If answer is not in PDF, answer normally.
-
-PDF Context:
+Context:
 {context}
 
 Question:
